@@ -35,7 +35,7 @@ backup(){
   done
   domain=$(openssl x509 -in "$SSL_DIR/de_GWD.cer" -noout -subject -nameopt RFC2253 | sed -n 's/^subject=CN=//p' | cut -d, -f1 | sed 's/^\*\.//' | tr -cd 'A-Za-z0-9._-')
   [[ -n "$domain" ]] || die "无法从证书读取域名"
-  [[ -n "$ARCHIVE" ]] || ARCHIVE="$BACKUP_DIR/${domain}_ecc.zip"
+  [[ -n "$ARCHIVE" ]] || ARCHIVE="$BACKUP_DIR/${domain}.zip"
   mkdir -p "$BACKUP_DIR"
   TMP_DIR=$(mktemp -d)
   mkdir -p "$TMP_DIR/vinx.eu.org_ecc"
@@ -93,7 +93,7 @@ restore(){
 
 usage(){
   echo "用法: $0 -b [-f 备份文件] | $0 -r [-f 指定证书压缩包]" >&2
-  echo "-b 默认按证书 CN 生成 <域名>_ecc.zip；-r 当前目录仅有一个 *.zip 时自动选择" >&2
+  echo "-b 默认按证书 CN 生成 <域名>.zip；-r 当前目录仅有一个 *.zip 时自动选择" >&2
   echo "变量: DSBR_SSL_DIR DSBR_BACKUP_DIR DSBR_ARCHIVE" >&2
   exit 2
 }

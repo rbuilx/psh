@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# 中文：SSL 证书备份与恢复工具，适用于 server/client。
-# English: SSL certificate backup and restore tool for server/client.
-# 中文：-b 备份，-r 恢复，-f 指定证书压缩包；默认备份到当前目录。
-# English: -b backs up, -r restores, -f selects an archive; default output is the current directory.
+# SSL certificate backup and restore tool for server/client.
+# -b backs up, -r restores, and -f selects an archive; default output is the current directory.
 set -euo pipefail
 
 SSL_DIR="${DSBR_SSL_DIR:-/var/www/ssl}"
@@ -14,39 +12,39 @@ die(){ echo "dsbr.sh: $*" >&2; exit 1; }
 cleanup(){ [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]] && rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
-require_root(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || die "请使用 root 执行"; }
-need(){ command -v "$1" >/dev/null 2>&1 || die "缺少命令: $1"; }
+require_root(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || die "run as root"; }
+need(){ command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
 need_zip(){
   command -v zip >/dev/null 2>&1 && return 0
   if command -v apt-get >/dev/null 2>&1; then
     DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zip >/dev/null 2>&1 && return 0
   fi
-  die "缺少命令: zip；请先安装 zip 后重试"
+  die "missing command: zip; install zip and try again"
 }
 
 archive_member(){
   local suffix="$1" member
   member=$(unzip -Z1 "$ARCHIVE" | awk -v s="$suffix" '$0 ~ "(^|/)" s "$" {print; exit}')
-  [[ -n "$member" ]] || die "压缩包中找不到 $suffix"
+  [[ -n "$member" ]] || die "archive member not found: $suffix"
   printf '%s\n' "$member"
 }
 
 validate_pair(){
   local cert="$1" key="$2"
-  openssl x509 -in "$cert" -noout -checkend 0 >/dev/null || die "证书不存在或已过期"
+  openssl x509 -in "$cert" -noout -checkend 0 >/dev/null || die "certificate is missing or expired"
   openssl x509 -in "$cert" -pubkey -noout >"$TMP_DIR/cert.pub"
   openssl pkey -in "$key" -pubout >"$TMP_DIR/key.pub"
-  cmp -s "$TMP_DIR/cert.pub" "$TMP_DIR/key.pub" || die "证书与私钥不匹配"
+  cmp -s "$TMP_DIR/cert.pub" "$TMP_DIR/key.pub" || die "certificate and private key do not match"
 }
 
 backup(){
   local output domain
   for file in de_GWD.cer de_GWD.key dhparam.pem; do
-    [[ -f "$SSL_DIR/$file" ]] || die "找不到 $SSL_DIR/$file"
+    [[ -f "$SSL_DIR/$file" ]] || die "file not found: $SSL_DIR/$file"
   done
   domain=$(openssl x509 -in "$SSL_DIR/de_GWD.cer" -noout -subject -nameopt RFC2253 | sed -n 's/^subject=CN=//p' | cut -d, -f1 | sed 's/^\*\.//' | tr -cd 'A-Za-z0-9._-')
-  [[ -n "$domain" ]] || die "无法从证书读取域名"
+  [[ -n "$domain" ]] || die "could not read the domain from the certificate"
   [[ -n "$ARCHIVE" ]] || ARCHIVE="$BACKUP_DIR/${domain}.zip"
   mkdir -p "$BACKUP_DIR"
   TMP_DIR=$(mktemp -d)
@@ -55,7 +53,7 @@ backup(){
   output="$TMP_DIR/dsbr.zip"
   (cd "$TMP_DIR" && zip -qr "$output" vinx.eu.org_ecc)
   install -m 0600 "$output" "$ARCHIVE"
-  echo "备份完成: $ARCHIVE"
+  echo "Backup complete: $ARCHIVE"
 }
 
 restore(){
@@ -65,10 +63,10 @@ restore(){
     if [[ "$candidate_count" == 1 ]]; then
       ARCHIVE=$(find "$PWD" -maxdepth 1 -type f -name '*.zip' -print -quit)
     else
-      die "当前目录没有唯一的 *.zip，请使用 -f 指定备份文件"
+      die "the current directory does not contain exactly one *.zip; use -f to select an archive"
     fi
   fi
-  [[ -f "$ARCHIVE" ]] || die "找不到备份: $ARCHIVE"
+  [[ -f "$ARCHIVE" ]] || die "archive not found: $ARCHIVE"
   TMP_DIR=$(mktemp -d)
   cert_member=$(archive_member de_GWD.cer)
   key_member=$(archive_member de_GWD.key)
@@ -96,19 +94,19 @@ restore(){
     done
     chmod 0644 "$SSL_DIR/de_GWD.cer" "$SSL_DIR/dhparam.pem"
     chmod 0600 "$SSL_DIR/de_GWD.key"
-    die "nginx 检查失败，已恢复旧证书"
+    die "nginx configuration test failed; the previous certificate was restored"
   fi
   systemctl is-active --quiet nginx && systemctl reload nginx || true
-  echo "恢复完成: $SSL_DIR"
-  echo "旧证书备份: $current_backup"
+  echo "Restore complete: $SSL_DIR"
+  echo "Previous certificate backup: $current_backup"
 }
 
 usage(){
-  echo "用法: $0 -b [-f 备份文件] | $0 -r [-f 指定证书压缩包]" >&2
-  echo "-b 默认按证书 CN 生成 <域名>.zip；-r 当前目录仅有一个 *.zip 时自动选择" >&2
+  echo "Usage: $0 -b [-f archive] | $0 -r [-f archive]" >&2
+  echo "Backup names use the certificate CN; restore auto-selects a single *.zip" >&2
   echo "Usage: $0 -b [-f archive] | $0 -r [-f archive]" >&2
   echo "Backup names are derived from the certificate CN; restore auto-selects a single *.zip" >&2
-  echo "变量: DSBR_SSL_DIR DSBR_BACKUP_DIR DSBR_ARCHIVE" >&2
+  echo "Variables: DSBR_SSL_DIR DSBR_BACKUP_DIR DSBR_ARCHIVE" >&2
   echo "Variables: DSBR_SSL_DIR DSBR_BACKUP_DIR DSBR_ARCHIVE" >&2
   exit 2
 }
@@ -120,7 +118,7 @@ while getopts ":brf:h" opt; do
     r) mode="restore" ;;
     f) ARCHIVE="$OPTARG" ;;
     h) usage ;;
-    :) die "选项 -$OPTARG 需要参数" ;;
+    :) die "option -$OPTARG requires an argument" ;;
     \?) usage ;;
   esac
 done

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# 中文：SSL 证书备份与恢复工具，适用于 server/client。
+# English: SSL certificate backup and restore tool for server/client.
+# 中文：-b 备份，-r 恢复，-f 指定证书压缩包；默认备份到当前目录。
+# English: -b backs up, -r restores, -f selects an archive; default output is the current directory.
 set -euo pipefail
 
 SSL_DIR="${DSBR_SSL_DIR:-/var/www/ssl}"
@@ -102,7 +106,10 @@ restore(){
 usage(){
   echo "用法: $0 -b [-f 备份文件] | $0 -r [-f 指定证书压缩包]" >&2
   echo "-b 默认按证书 CN 生成 <域名>.zip；-r 当前目录仅有一个 *.zip 时自动选择" >&2
+  echo "Usage: $0 -b [-f archive] | $0 -r [-f archive]" >&2
+  echo "Backup names are derived from the certificate CN; restore auto-selects a single *.zip" >&2
   echo "变量: DSBR_SSL_DIR DSBR_BACKUP_DIR DSBR_ARCHIVE" >&2
+  echo "Variables: DSBR_SSL_DIR DSBR_BACKUP_DIR DSBR_ARCHIVE" >&2
   exit 2
 }
 

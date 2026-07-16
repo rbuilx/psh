@@ -12,6 +12,14 @@ trap cleanup EXIT
 
 require_root(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || die "请使用 root 执行"; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "缺少命令: $1"; }
+need_zip(){
+  command -v zip >/dev/null 2>&1 && return 0
+  if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zip >/dev/null 2>&1 && return 0
+  fi
+  die "缺少命令: zip；请先安装 zip 后重试"
+}
 
 archive_member(){
   local suffix="$1" member
@@ -114,7 +122,7 @@ require_root
 need openssl
 need unzip
 case "$mode" in
-  backup) need zip; backup ;;
+  backup) need_zip; backup ;;
   restore) restore ;;
   *) usage ;;
 esac

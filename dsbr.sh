@@ -3,7 +3,7 @@ set -euo pipefail
 
 SSL_DIR="${DSBR_SSL_DIR:-/var/www/ssl}"
 BACKUP_DIR="${DSBR_BACKUP_DIR:-$PWD}"
-ARCHIVE="${DSBR_ARCHIVE:-$BACKUP_DIR/vinx.eu.org_ecc.zip}"
+ARCHIVE="${DSBR_ARCHIVE:-}"
 TMP_DIR=""
 
 die(){ echo "dsbr.sh: $*" >&2; exit 1; }
@@ -29,10 +29,13 @@ validate_pair(){
 }
 
 backup(){
-  local output
+  local output domain
   for file in de_GWD.cer de_GWD.key dhparam.pem; do
     [[ -f "$SSL_DIR/$file" ]] || die "找不到 $SSL_DIR/$file"
   done
+  domain=$(openssl x509 -in "$SSL_DIR/de_GWD.cer" -noout -subject -nameopt RFC2253 | sed -n 's/^subject=CN=//p' | cut -d, -f1 | sed 's/^\*\.//' | tr -cd 'A-Za-z0-9._-')
+  [[ -n "$domain" ]] || die "无法从证书读取域名"
+  [[ -n "$ARCHIVE" ]] || ARCHIVE="$BACKUP_DIR/${domain}_ecc.zip"
   mkdir -p "$BACKUP_DIR"
   TMP_DIR=$(mktemp -d)
   mkdir -p "$TMP_DIR/vinx.eu.org_ecc"
@@ -44,7 +47,15 @@ backup(){
 }
 
 restore(){
-  local cert_member key_member dh_member stamp current_backup
+  local cert_member key_member dh_member stamp current_backup candidate_count
+  if [[ -z "$ARCHIVE" ]]; then
+    candidate_count=$(find "$PWD" -maxdepth 1 -type f -name '*_ecc.zip' | wc -l | tr -d ' ')
+    if [[ "$candidate_count" == 1 ]]; then
+      ARCHIVE=$(find "$PWD" -maxdepth 1 -type f -name '*_ecc.zip' -print -quit)
+    else
+      die "当前目录没有唯一的 *_ecc.zip，请使用 -f 指定备份文件"
+    fi
+  fi
   [[ -f "$ARCHIVE" ]] || die "找不到备份: $ARCHIVE"
   TMP_DIR=$(mktemp -d)
   cert_member=$(archive_member de_GWD.cer)
@@ -82,6 +93,7 @@ restore(){
 
 usage(){
   echo "用法: $0 -b [-f 备份文件] | $0 -r [-f 指定证书压缩包]" >&2
+  echo "-b 默认按证书 CN 生成 <域名>_ecc.zip；-r 当前目录仅有一个 *_ecc.zip 时自动选择" >&2
   echo "变量: DSBR_SSL_DIR DSBR_BACKUP_DIR DSBR_ARCHIVE" >&2
   exit 2
 }

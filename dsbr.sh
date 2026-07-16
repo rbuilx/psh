@@ -49,11 +49,11 @@ backup(){
 restore(){
   local cert_member key_member dh_member stamp current_backup candidate_count
   if [[ -z "$ARCHIVE" ]]; then
-    candidate_count=$(find "$PWD" -maxdepth 1 -type f -name '*_ecc.zip' | wc -l | tr -d ' ')
+    candidate_count=$(find "$PWD" -maxdepth 1 -type f -name '*.zip' | wc -l | tr -d ' ')
     if [[ "$candidate_count" == 1 ]]; then
-      ARCHIVE=$(find "$PWD" -maxdepth 1 -type f -name '*_ecc.zip' -print -quit)
+      ARCHIVE=$(find "$PWD" -maxdepth 1 -type f -name '*.zip' -print -quit)
     else
-      die "当前目录没有唯一的 *_ecc.zip，请使用 -f 指定备份文件"
+      die "当前目录没有唯一的 *.zip，请使用 -f 指定备份文件"
     fi
   fi
   [[ -f "$ARCHIVE" ]] || die "找不到备份: $ARCHIVE"
@@ -93,7 +93,7 @@ restore(){
 
 usage(){
   echo "用法: $0 -b [-f 备份文件] | $0 -r [-f 指定证书压缩包]" >&2
-  echo "-b 默认按证书 CN 生成 <域名>_ecc.zip；-r 当前目录仅有一个 *_ecc.zip 时自动选择" >&2
+  echo "-b 默认按证书 CN 生成 <域名>_ecc.zip；-r 当前目录仅有一个 *.zip 时自动选择" >&2
   echo "变量: DSBR_SSL_DIR DSBR_BACKUP_DIR DSBR_ARCHIVE" >&2
   exit 2
 }

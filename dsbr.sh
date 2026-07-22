@@ -9,13 +9,12 @@ YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 PLAIN='\033[0m'
 
-SHOW_HELP=0
 MODE=""
 FILE=""
 
 usage() {
     echo -e "${BLUE}Usage:${PLAIN}"
-    echo -e "  bash dsbr.sh -b [zip_name]   备份当前 SSL 证书及 ACME 配置"
+    echo -e "  bash dsbr.sh -b [zip_name]   备份当前 SSL 证书及 ACME 配置 (默认以域名命名)"
     echo -e "  bash dsbr.sh -r -f [file]    恢复指定 zip 压缩包中的 SSL 证书"
     echo -e "  bash dsbr.sh -h              显示帮助信息"
     exit 1
@@ -52,15 +51,38 @@ done
 
 # ================= 备份逻辑 =================
 do_backup() {
-    local target_file="${FILE:-ssl_backup_$(date +%Y%m%d).zip}"
-    echo -e "${BLUE}[+] 正在打包 SSL 证书与 ACME 配置...${PLAIN}"
+    local domain=""
+
+    # 1. 优先从已有证书提取 CN (自动去除泛域名 *. 前缀)
+    if [[ -f "/var/www/ssl/de_GWD.cer" ]]; then
+        domain=$(openssl x509 -subject -noout -in /var/www/ssl/de_GWD.cer 2>/dev/null | grep -o 'CN = .*' | cut -d= -f2 | xargs | sed 's/^\*\.//')
+    fi
+
+    # 2. 备选：从 Nginx 配置文件提取
+    if [[ -z "$domain" && -f "/etc/nginx/conf.d/default.conf" ]]; then
+        domain=$(awk '/server_name/ {print $2; exit}' /etc/nginx/conf.d/default.conf 2>/dev/null | sed 's/[;]//g')
+    fi
+
+    # 3. 备选：从 .acme.sh 目录中提取
+    if [[ -z "$domain" && -d "/root/.acme.sh" ]]; then
+        domain=$(ls /root/.acme.sh 2>/dev/null | grep '_ecc' | head -n 1 | sed 's/_ecc$//' | sed 's/^\*\.//')
+    fi
+
+    # 4. 生成带 .zip 后缀的文件名
+    local default_name="${domain:-ssl_backup}.zip"
+    local target_file="${FILE:-$default_name}"
+    
+    # 确保扩展名有 .zip
+    [[ "$target_file" != *.zip ]] && target_file="${target_file}.zip"
+
+    echo -e "${BLUE}[+] 正在为域名 ${YELLOW}${domain:-未知}${BLUE} 打包 SSL 证书与 ACME 配置...${PLAIN}"
     
     if [[ ! -d "/var/www/ssl" && ! -d "/root/.acme.sh" ]]; then
         echo -e "${RED}[!] 错误：未找到 /var/www/ssl 或 /root/.acme.sh 目录！${PLAIN}"
         exit 1
     fi
 
-    # 创建标准根节点备份
+    # 从根节点标准相对路径打包
     cd /
     zip -rq "/tmp/$target_file" var/www/ssl root/.acme.sh 2>/dev/null
     mv -f "/tmp/$target_file" "./$target_file"

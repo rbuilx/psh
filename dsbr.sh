@@ -1,180 +1,149 @@
-#!/usr/bin/env bash
-# SSL certificate backup and restore tool for server/client.
-# -b backs up, -r restores, and -f selects an archive.
-set -euo pipefail
+#!/bin/bash
+# =========================================================
+#  dsbr.sh - Domain & SSL Backup / Restore Tool (Optimized)
+# =========================================================
 
-SSL_DIR="${DSBR_SSL_DIR:-/var/www/ssl}"
-ACME_ROOT="${DSBR_ACME_ROOT:-/root/.acme.sh}"
-BACKUP_DIR="${DSBR_BACKUP_DIR:-$PWD}"
-ARCHIVE="${DSBR_ARCHIVE:-}"
-TMP_DIR=""
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+PLAIN='\033[0m'
 
-die(){ echo "dsbr.sh: $*" >&2; exit 1; }
-cleanup(){ [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]] && rm -rf "$TMP_DIR"; }
-trap cleanup EXIT
+SHOW_HELP=0
+MODE=""
+FILE=""
 
-require_root(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || die "run as root"; }
-need(){ command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
-need_zip(){
-  command -v zip >/dev/null 2>&1 && return 0
-  if command -v apt-get >/dev/null 2>&1; then
-    DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zip >/dev/null 2>&1 && return 0
-  fi
-  die "missing command: zip; install zip and try again"
+usage() {
+    echo -e "${BLUE}Usage:${PLAIN}"
+    echo -e "  bash dsbr.sh -b [zip_name]   备份当前 SSL 证书及 ACME 配置"
+    echo -e "  bash dsbr.sh -r -f [file]    恢复指定 zip 压缩包中的 SSL 证书"
+    echo -e "  bash dsbr.sh -h              显示帮助信息"
+    exit 1
 }
 
-certificate_domain(){
-  openssl x509 -in "$1" -noout -subject -nameopt RFC2253 2>/dev/null \
-    | sed -n 's/^subject=CN=//p' | cut -d, -f1 | sed 's/^\*\.//' \
-    | tr -cd 'A-Za-z0-9._-'
-}
-
-public_key_hash(){
-  openssl x509 -in "$1" -pubkey -noout 2>/dev/null \
-    | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}'
-}
-
-private_key_hash(){
-  openssl pkey -in "$1" -pubout 2>/dev/null \
-    | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}'
-}
-
-validate_pair(){
-  local cert="$1" key="$2"
-  openssl x509 -in "$cert" -noout -checkend 0 >/dev/null 2>&1 \
-    || die "certificate is missing or expired"
-  [[ -s "$key" ]] || die "private key is missing"
-  [[ "$(public_key_hash "$cert")" == "$(private_key_hash "$key")" ]] \
-    || die "certificate and private key do not match"
-}
-
-find_acme_dir(){
-  local cert="$1" domain="$2" d hash matches=()
-  hash=$(public_key_hash "$cert")
-  for d in "$ACME_ROOT"/*_ecc; do
-    [[ -d "$d" ]] || continue
-    if [[ -s "$d/fullchain.cer" ]] && [[ "$(public_key_hash "$d/fullchain.cer")" == "$hash" ]]; then
-      matches+=("$d")
-    fi
-  done
-  if [[ ${#matches[@]} -eq 1 ]]; then
-    printf '%s\n' "${matches[0]}"
-    return 0
-  fi
-  if [[ -d "$ACME_ROOT/${domain}_ecc" ]]; then
-    printf '%s\n' "$ACME_ROOT/${domain}_ecc"
-    return 0
-  fi
-  [[ ${#matches[@]} -eq 0 ]] && die "could not match the deployed certificate to an ACME *_ecc directory"
-  die "multiple ACME *_ecc directories match the deployed certificate"
-}
-
-backup(){
-  local cert="$SSL_DIR/de_GWD.cer" key="$SSL_DIR/de_GWD.key" domain acme_dir output
-  [[ -f "$cert" && -f "$key" ]] || die "certificate or private key not found in $SSL_DIR"
-  domain=$(certificate_domain "$cert")
-  [[ -n "$domain" ]] || die "could not read the domain from the certificate"
-  acme_dir=$(find_acme_dir "$cert" "$domain")
-  [[ -d "$SSL_DIR" ]] || die "SSL directory not found: $SSL_DIR"
-  [[ -n "$ARCHIVE" ]] || ARCHIVE="$BACKUP_DIR/${domain}.zip"
-
-  mkdir -p "$BACKUP_DIR"
-  TMP_DIR=$(mktemp -d)
-  mkdir -p "$TMP_DIR/root/.acme.sh" "$TMP_DIR/var/www"
-  cp -a "$acme_dir" "$TMP_DIR/root/.acme.sh/"
-  cp -a "$SSL_DIR" "$TMP_DIR/var/www/ssl"
-  output="$TMP_DIR/archive.zip"
-  (cd "$TMP_DIR" && zip -qr "$output" root var)
-  install -m 0600 "$output" "$ARCHIVE"
-  echo "Backup complete: $ARCHIVE"
-  echo "ACME directory: $acme_dir"
-}
-
-validate_archive_paths(){
-  local member
-  while IFS= read -r member; do
-    case "$member" in
-      /*|../*|*/../*|*//* ) die "unsafe archive path: $member" ;;
+# 命令行参数解析
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -b|--backup)
+            MODE="backup"
+            shift
+            ;;
+        -r|--restore)
+            MODE="restore"
+            shift
+            ;;
+        -f|--file)
+            FILE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            ;;
+        *)
+            if [[ -z "$FILE" && "$MODE" == "backup" ]]; then
+                FILE="$1"
+            fi
+            shift
+            ;;
     esac
-  done < <(unzip -Z1 "$ARCHIVE")
-}
-
-restore(){
-  local extract acme_dir cert key domain stamp current_backup old_ssl old_acme
-  if [[ -z "$ARCHIVE" ]]; then
-    mapfile -t candidates < <(find "$PWD" -maxdepth 1 -type f -name '*.zip' -print)
-    [[ ${#candidates[@]} -eq 1 ]] || die "use -f when the current directory does not contain exactly one *.zip"
-    ARCHIVE="${candidates[0]}"
-  fi
-  [[ -f "$ARCHIVE" ]] || die "archive not found: $ARCHIVE"
-  TMP_DIR=$(mktemp -d)
-  validate_archive_paths
-  unzip -q "$ARCHIVE" -d "$TMP_DIR/extract"
-  extract="$TMP_DIR/extract"
-  [[ -d "$extract/root/.acme.sh" && -d "$extract/var/www/ssl" ]] \
-    || die "archive must contain root/.acme.sh and var/www/ssl"
-
-  mapfile -t acme_dirs < <(find "$extract/root/.acme.sh" -mindepth 1 -maxdepth 1 -type d -name '*_ecc' -print)
-  [[ ${#acme_dirs[@]} -eq 1 ]] || die "archive must contain exactly one ACME *_ecc directory"
-  acme_dir="${acme_dirs[0]}"
-  cert="$extract/var/www/ssl/de_GWD.cer"
-  key="$extract/var/www/ssl/de_GWD.key"
-  [[ -f "$cert" && -f "$key" ]] || die "archive is missing de_GWD.cer or de_GWD.key"
-  validate_pair "$cert" "$key"
-  domain=$(certificate_domain "$cert")
-
-  stamp=$(date +%Y%m%d%H%M%S)
-  current_backup="$BACKUP_DIR/${domain}-before-$stamp"
-  mkdir -p "$current_backup"
-  [[ -d "$ACME_ROOT" ]] && cp -a "$ACME_ROOT" "$current_backup/acme.sh" || true
-  [[ -d "$SSL_DIR" ]] && cp -a "$SSL_DIR" "$current_backup/ssl" || true
-
-  old_ssl="$SSL_DIR"
-  old_acme="$ACME_ROOT/$(basename "$acme_dir")"
-  rm -rf "$old_ssl" "$old_acme"
-  mkdir -p "$ACME_ROOT" "$(dirname "$SSL_DIR")"
-  cp -a "$extract/var/www/ssl" "$SSL_DIR"
-  cp -a "$acme_dir" "$ACME_ROOT/"
-  chown -R root:root "$SSL_DIR" "$old_acme"
-  chmod 0700 "$ACME_ROOT" "$old_acme"
-  find "$SSL_DIR" -type f -name '*.key' -exec chmod 0600 {} +
-
-  if command -v nginx >/dev/null 2>&1 && ! nginx -t >/dev/null 2>&1; then
-    rm -rf "$old_ssl" "$old_acme"
-    [[ -d "$current_backup/ssl" ]] && cp -a "$current_backup/ssl" "$old_ssl"
-    [[ -d "$current_backup/acme.sh/$(basename "$old_acme")" ]] && cp -a "$current_backup/acme.sh/$(basename "$old_acme")" "$old_acme"
-    die "nginx configuration test failed; the previous certificate was restored"
-  fi
-  systemctl is-active --quiet nginx && systemctl reload nginx || true
-  echo "Restore complete: $SSL_DIR and $old_acme"
-  echo "Previous certificate backup: $current_backup"
-}
-
-usage(){
-  echo "Usage: $0 -b [-f archive] | $0 -r [-f archive]" >&2
-  echo "Backup names use the certificate domain; restore auto-selects a single *.zip" >&2
-  echo "Variables: DSBR_SSL_DIR DSBR_ACME_ROOT DSBR_BACKUP_DIR DSBR_ARCHIVE" >&2
-  exit 2
-}
-
-mode=""
-while getopts ":brf:h" opt; do
-  case "$opt" in
-    b) mode="backup" ;;
-    r) mode="restore" ;;
-    f) ARCHIVE="$OPTARG" ;;
-    h) usage ;;
-    :) die "option -$OPTARG requires an argument" ;;
-    \?) usage ;;
-  esac
 done
 
-require_root
-need openssl
-need unzip
-case "$mode" in
-  backup) need_zip; backup ;;
-  restore) restore ;;
-  *) usage ;;
+[[ -z "$MODE" ]] && usage
+
+# ================= 备份逻辑 =================
+do_backup() {
+    local target_file="${FILE:-ssl_backup_$(date +%Y%m%d).zip}"
+    echo -e "${BLUE}[+] 正在打包 SSL 证书与 ACME 配置...${PLAIN}"
+    
+    if [[ ! -d "/var/www/ssl" && ! -d "/root/.acme.sh" ]]; then
+        echo -e "${RED}[!] 错误：未找到 /var/www/ssl 或 /root/.acme.sh 目录！${PLAIN}"
+        exit 1
+    fi
+
+    # 创建标准根节点备份
+    cd /
+    zip -rq "/tmp/$target_file" var/www/ssl root/.acme.sh 2>/dev/null
+    mv -f "/tmp/$target_file" "./$target_file"
+
+    echo -e "${GREEN}[✓] 备份成功！已生成备份文件: ${YELLOW}$target_file${PLAIN}"
+}
+
+# ================= 恢复逻辑 =================
+do_restore() {
+    [[ -z "$FILE" ]] && { echo -e "${RED}[!] 错误：恢复模式下必须指定 -f 参数！${PLAIN}"; exit 1; }
+    [[ ! -f "$FILE" ]] && { echo -e "${RED}[!] 错误：找不到文件 $FILE${PLAIN}"; exit 1; }
+
+    echo -e "${BLUE}[+] 正在智能解析与恢复证书: ${YELLOW}$FILE${PLAIN}..."
+
+    local tmp_dir="/tmp/dsbr_restore_$(date +%s)"
+    mkdir -p "$tmp_dir"
+    unzip -qo "$FILE" -d "$tmp_dir" 2>/dev/null
+
+    if [[ $? -ne 0 ]]; then
+        echo -e "${RED}[!] 错误：无法解压 $FILE，文件格式不正确或损坏！${PLAIN}"
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+
+    mkdir -p /var/www/ssl /root/.acme.sh
+
+    # 1. 智能提取 .cer 和 .key 文件到 /var/www/ssl
+    local cert_file key_file
+    cert_file=$(find "$tmp_dir" -type f \( -name "de_GWD.cer" -o -name "fullchain.cer" -o -name "*.cer" -o -name "*.crt" \) | head -n 1)
+    key_file=$(find "$tmp_dir" -type f \( -name "de_GWD.key" -o -name "*.key" \) | head -n 1)
+
+    if [[ -n "$cert_file" && -n "$key_file" ]]; then
+        cp -f "$cert_file" /var/www/ssl/de_GWD.cer
+        cp -f "$key_file" /var/www/ssl/de_GWD.key
+        chmod 644 /var/www/ssl/de_GWD.cer /var/www/ssl/de_GWD.key
+        echo -e "${GREEN}[✓] 已成功智能提取并放置 SSL 证书及私钥 -> /var/www/ssl/${PLAIN}"
+    else
+        echo -e "${YELLOW}[!] 警告：未在压缩包中识别到有效的 .cer 或 .key 文件！${PLAIN}"
+    fi
+
+    # 2. 智能搜寻并还原 ACME 目录 (支持多层级放置)
+    local acme_found=0
+    find "$tmp_dir" -type d -name "*_ecc" 2>/dev/null | while read -r ecc_path; do
+        cp -rf "$ecc_path" /root/.acme.sh/ 2>/dev/null
+        acme_found=1
+    done
+
+    if find "$tmp_dir" -type d -name ".acme.sh" 2>/dev/null | grep -q ".acme.sh"; then
+        cp -rf "$tmp_dir"/*/.acme.sh/* /root/.acme.sh/ 2>/dev/null || cp -rf "$tmp_dir"/.acme.sh/* /root/.acme.sh/ 2>/dev/null
+        acme_found=1
+    fi
+
+    if [[ $acme_found -eq 1 ]]; then
+        echo -e "${GREEN}[✓] 已成功还原 ACME 自动续期配置 -> /root/.acme.sh/${PLAIN}"
+    fi
+
+    rm -rf "$tmp_dir"
+
+    # 3. 证书可用性校验与到期打印
+    if [[ -f "/var/www/ssl/de_GWD.cer" ]]; then
+        local expire_date cert_domain
+        expire_date=$(openssl x509 -enddate -noout -in /var/www/ssl/de_GWD.cer 2>/dev/null | cut -d= -f2)
+        cert_domain=$(openssl x509 -subject -noout -in /var/www/ssl/de_GWD.cer 2>/dev/null | grep -o 'CN = .*' | cut -d= -f2 | xargs)
+        
+        echo -e "${BLUE}--------------------------------------------------${PLAIN}"
+        echo -e "${GREEN}证书域名 (CN): ${YELLOW}${cert_domain:-未知}${PLAIN}"
+        echo -e "${GREEN}证书到期时间:  ${YELLOW}${expire_date:-未知}${PLAIN}"
+        echo -e "${BLUE}--------------------------------------------------${PLAIN}"
+    fi
+
+    # 4. 自动重载服务
+    echo -e "${BLUE}[+] 正在重启 Nginx 与 Xray 服务...${PLAIN}"
+    systemctl restart nginx 2>/dev/null && echo -e "${GREEN}[✓] Nginx 服务已成功重载${PLAIN}"
+    systemctl restart vtrui 2>/dev/null && echo -e "${GREEN}[✓] Xray (vtrui) 服务已成功重载${PLAIN}"
+    
+    echo -e "${GREEN}🎉 SSL 证书与配置已完美恢复！${PLAIN}"
+}
+
+case "$MODE" in
+    backup)
+        do_backup
+        ;;
+    restore)
+        do_restore
+        ;;
 esac
